@@ -91,9 +91,35 @@
 
   <script type="text/babel" data-presets="react">
     const { useState, useEffect, useMemo, useRef, useCallback } = React;
-    const JETT_API = "https://api.jett.uz/stockv3";
     const LS_TXNS = "fbz_portfolio_txns_v1";
     const LS_SIGS = "fbz_portfolio_sigs_v1";
+    const LS_JETT_PROXY = "fbz_jett_proxy_base";
+
+    function resolveJettBase() {
+      try {
+        if (typeof window !== "undefined" && window.FBZ_JETT_API_BASE) {
+          const g = String(window.FBZ_JETT_API_BASE).trim().replace(/\/$/, "");
+          if (g) return g;
+        }
+        const s = localStorage.getItem(LS_JETT_PROXY);
+        if (s && String(s).trim()) return String(s).trim().replace(/\/$/, "");
+      } catch (_) {}
+      return "https://api.jett.uz";
+    }
+
+    function marketStockv3Url(queryString) {
+      const base = resolveJettBase();
+      if (/\/stockv3$/i.test(base)) return `${base}?${queryString}`;
+      return `${base}/stockv3?${queryString}`;
+    }
+
+    function isSamePageOrigin(absUrl) {
+      try {
+        return new URL(absUrl, window.location.href).origin === window.location.origin;
+      } catch (_) {
+        return false;
+      }
+    }
 
     const num = (v) => {
       if (v == null || v === "") return NaN;
@@ -416,6 +442,19 @@
       throw new Error(last);
     }
 
+    async function fetchMarketJson(url) {
+      if (isSamePageOrigin(url)) {
+        const res = await fetch(url, {
+          method: "GET",
+          credentials: "same-origin",
+          headers: { Accept: "application/json" },
+        });
+        if (!res.ok) throw new Error(String(res.status));
+        return res.json();
+      }
+      return fetchJsonWithFallback(url);
+    }
+
     async function fetchAllMarket() {
       const limit = 10;
       let offset = 0;
@@ -430,7 +469,7 @@
       };
       for (;;) {
         const qs = new URLSearchParams({ ...paramsBase, offset: String(offset) });
-        const data = await fetchJsonWithFallback(`${JETT_API}?${qs.toString()}`);
+        const data = await fetchMarketJson(marketStockv3Url(qs.toString()));
         const chunk = data.stocks || data.items || data.results || [];
         const stats = data.stats || {};
         const tr = Number(stats.total_records);
@@ -445,7 +484,7 @@
       return all;
     }
 
-    function useMarketPoll(intervalMs) {
+    function useMarketPoll(intervalMs, proxyNonce) {
       const [stocks, setStocks] = useState([]);
       const [loading, setLoading] = useState(true);
       const [error, setError] = useState(null);
@@ -466,7 +505,7 @@
         } finally {
           if (!silent) setLoading(false);
         }
-      }, []);
+      }, [proxyNonce]);
 
       useEffect(() => {
         load(false);
@@ -611,15 +650,33 @@
     const fmtNum = (n, d = 2) => (isFinite(n) ? Number(n).toFixed(d) : "—");
 
     function App() {
-      const { stocks, loading: mLoad, error: mErr, updatedAt, reload } = useMarketPoll(60000);
-      const index = useMemo(() => buildMarketIndex(stocks), [stocks]);
-
+      const [proxyNonce, setProxyNonce] = useState(0);
+      const [proxyDraft, setProxyDraft] = useState(() => {
+        try {
+          return localStorage.getItem(LS_JETT_PROXY) || "";
+        } catch (_) {
+          return "";
+        }
+      });
+      const [showProxyHelp, setShowProxyHelp] = useState(false);
       const [txns, setTxns] = useState([]);
       const [parseMsg, setParseMsg] = useState("");
       const [dragOver, setDragOver] = useState(false);
       const [search, setSearch] = useState("");
       const [filter, setFilter] = useState("all");
       const [sort, setSort] = useState({ key: "currentValue", dir: "desc" });
+
+      const { stocks, loading: mLoad, error: mErr, updatedAt, reload } = useMarketPoll(60000, proxyNonce);
+      const index = useMemo(() => buildMarketIndex(stocks), [stocks]);
+
+      const saveJettProxy = () => {
+        const v = proxyDraft.trim();
+        try {
+          if (v) localStorage.setItem(LS_JETT_PROXY, v);
+          else localStorage.removeItem(LS_JETT_PROXY);
+        } catch (_) {}
+        setProxyNonce((n) => n + 1);
+      };
 
       useEffect(() => {
         try {
@@ -794,10 +851,13 @@
               <h1 className="text-3xl md:text-4xl font-bold tracking-tight bg-gradient-to-r from-teal-300 via-sky-300 to-indigo-300 bg-clip-text text-transparent">
                 Portfolio Monitor
               </h1>
-              <p className="text-slate-400 mt-2 max-w-xl text-sm leading-relaxed">
-                Uzbek broker CSV → FIFO positions, live prices from{" "}
-                <span className="text-slate-200">api.jett.uz/stockv3</span>. Jett usually allows that API only from{" "}
-                <span className="text-slate-200">app.jett.uz</span>, so from localhost you may see 403 — the app falls back to public JSON relays. Refreshes every 60s.
+              <p className="text-slate-400 mt-2 max-w-2xl text-sm leading-relaxed">
+                Uzbek broker CSV → FIFO positions, live prices from Jett’s{" "}
+                <span className="text-slate-200">stockv3</span> JSON. Browsers on other domains (including{" "}
+                <span className="text-slate-200">fond.toshkentinvest.uz</span>) are often blocked with 403; public relays
+                are unreliable. Use the <strong className="text-slate-300">same-site reverse proxy</strong> below so your
+                server calls <span className="text-slate-200">api.jett.uz</span> and the page only talks to your domain.
+                Refreshes every 60s.
               </p>
             </div>
             <div className="flex items-center gap-3">
@@ -843,6 +903,69 @@
                 Select CSV
               </label>
             </div>
+          </div>
+
+          <div className="glass rounded-2xl p-5 space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="text-lg font-semibold text-slate-100">Jett API base (same origin)</div>
+              <button
+                type="button"
+                onClick={() => setShowProxyHelp((v) => !v)}
+                className="text-xs text-teal-300/90 hover:text-teal-200 underline underline-offset-2"
+              >
+                {showProxyHelp ? "Hide nginx example" : "Show nginx example"}
+              </button>
+            </div>
+            <p className="text-xs text-slate-500 leading-relaxed">
+              Set this to a prefix on <strong className="text-slate-400">{typeof window !== "undefined" ? window.location.host : "your-domain"}</strong> that
+              reverse-proxies to <code className="text-slate-400">https://api.jett.uz</code>. The app then requests{" "}
+              <code className="text-slate-400">…/stockv3?…</code> on your host only (no third-party CORS). Optional: set{" "}
+              <code className="text-slate-400">window.FBZ_JETT_API_BASE</code> in a script before this bundle.
+            </p>
+            <div className="flex flex-col lg:flex-row gap-2">
+              <input
+                type="text"
+                value={proxyDraft}
+                onChange={(e) => setProxyDraft(e.target.value)}
+                placeholder="https://fond.toshkentinvest.uz/api/jett"
+                className="flex-1 bg-slate-900/60 border border-slate-700 rounded-lg px-3 py-2 text-sm font-mono text-slate-200 focus:outline-none focus:ring-2 focus:ring-teal-500/40"
+              />
+              <div className="flex gap-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={saveJettProxy}
+                  className="px-4 py-2 rounded-lg bg-teal-600/30 border border-teal-500/40 text-teal-100 text-sm font-medium hover:bg-teal-600/45 transition"
+                >
+                  Save & reload
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setProxyDraft("");
+                    try {
+                      localStorage.removeItem(LS_JETT_PROXY);
+                    } catch (_) {}
+                    setProxyNonce((n) => n + 1);
+                  }}
+                  className="px-4 py-2 rounded-lg border border-slate-600 text-slate-400 text-sm hover:bg-slate-800/80 transition"
+                >
+                  Clear
+                </button>
+              </div>
+            </div>
+            {showProxyHelp ? (
+              <pre className="text-[11px] leading-relaxed text-slate-400 bg-slate-950/90 border border-white/5 p-3 rounded-lg overflow-x-auto whitespace-pre">
+{`# Nginx: forward /api/jett/* → https://api.jett.uz/*
+location /api/jett/ {
+    proxy_pass https://api.jett.uz/;
+    proxy_ssl_server_name on;
+    proxy_set_header Host api.jett.uz;
+    proxy_set_header X-Real-IP $remote_addr;
+}
+# Then set base (no trailing slash) in the field above:
+# https://fond.toshkentinvest.uz/api/jett`}
+              </pre>
+            ) : null}
           </div>
 
           <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -893,16 +1016,23 @@
               </div>
               <ul className="list-disc pl-5 text-slate-400 text-xs space-y-1">
                 <li>
+                  <strong className="text-slate-300">Best fix on your own domain:</strong> add a reverse proxy on this site
+                  (see <strong className="text-slate-300">Jett API base</strong> above) so the browser never calls{" "}
+                  <code className="text-slate-300">api.jett.uz</code> directly. Hosting on{" "}
+                  <code className="text-slate-300">https://fond.toshkentinvest.uz</code> does not bypass Jett’s rules by
+                  itself.
+                </li>
+                <li>
                   Using <strong className="text-slate-300">https://127.0.0.1</strong> instead of http does{" "}
                   <strong className="text-slate-300">not</strong> fix Jett’s 403: your origin is still not{" "}
                   <code className="text-slate-300">https://app.jett.uz</code>.
                 </li>
                 <li>
                   <code className="text-slate-300">ERR_BLOCKED_BY_CLIENT</code> on allorigins is almost always an{" "}
-                  <strong className="text-slate-300">ad blocker / privacy filter</strong> — allow this page or{" "}
-                  <code className="text-slate-300">api.allorigins.win</code>, or try another browser profile.
+                  <strong className="text-slate-300">ad blocker</strong> — allow this site or disable blocking for relay
+                  hosts.
                 </li>
-                <li>If every relay returns 403, Jett may be blocking data-center IPs; try another network or VPN.</li>
+                <li>If every relay returns 403, Jett may be blocking data-center IPs; a same-origin proxy avoids that.</li>
               </ul>
             </div>
           ) : null}
