@@ -1,0 +1,1029 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Portfolio Monitor — Jett Live</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: "class",
+      theme: {
+        extend: {
+          fontFamily: { sans: ["DM Sans", "system-ui", "sans-serif"] },
+          colors: {
+            glass: "rgba(15, 23, 42, 0.55)",
+            edge: "rgba(148, 163, 184, 0.12)",
+          },
+          boxShadow: {
+            glow: "0 0 40px -10px rgba(34, 197, 94, 0.15)",
+          },
+        },
+      },
+    };
+  </script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&display=swap" rel="stylesheet" />
+  <style>
+    html { scroll-behavior: smooth; }
+    body {
+      font-family: "DM Sans", system-ui, sans-serif;
+      background: radial-gradient(1200px 800px at 10% -10%, rgba(59, 130, 246, 0.12), transparent),
+        radial-gradient(900px 600px at 100% 0%, rgba(34, 197, 94, 0.08), transparent),
+        #020617;
+      min-height: 100vh;
+    }
+    .glass {
+      background: rgba(15, 23, 42, 0.5);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      border: 1px solid rgba(148, 163, 184, 0.12);
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
+    }
+    .glass-hover {
+      transition: transform 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+    }
+    .glass-hover:hover {
+      transform: translateY(-2px);
+      border-color: rgba(94, 234, 212, 0.25);
+      box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(45, 212, 191, 0.08);
+    }
+    @keyframes spin-slow {
+      to { transform: rotate(360deg); }
+    }
+    .spinner {
+      border: 3px solid rgba(148, 163, 184, 0.2);
+      border-top-color: #2dd4bf;
+      border-radius: 50%;
+      width: 2.25rem;
+      height: 2.25rem;
+      animation: spin-slow 0.85s linear infinite;
+    }
+    .fade-in {
+      animation: fi 0.45s ease both;
+    }
+    @keyframes fi {
+      from { opacity: 0; transform: translateY(6px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    .sticky-th th {
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      background: rgba(15, 23, 42, 0.92);
+      backdrop-filter: blur(8px);
+    }
+    .drop-active {
+      border-color: rgba(45, 212, 191, 0.55) !important;
+      background: rgba(13, 148, 136, 0.12) !important;
+    }
+  </style>
+</head>
+<body class="text-slate-100 antialiased">
+  <div id="root"></div>
+
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+
+  <script type="text/babel" data-presets="react">
+    const { useState, useEffect, useMemo, useRef, useCallback } = React;
+    const JETT_API = "https://api.jett.uz/stockv3";
+    const LS_TXNS = "fbz_portfolio_txns_v1";
+    const LS_SIGS = "fbz_portfolio_sigs_v1";
+
+    const num = (v) => {
+      if (v == null || v === "") return NaN;
+      if (typeof v === "number" && Number.isFinite(v)) return v;
+      let s = String(v).replace(/\s/g, "").replace(/[\u00a0\u202f]/g, "").trim();
+      if (!s) return NaN;
+      const neg = s.startsWith("-");
+      if (neg) s = s.slice(1);
+      const lastComma = s.lastIndexOf(",");
+      const lastDot = s.lastIndexOf(".");
+      if (lastComma !== -1 && lastDot !== -1) {
+        if (lastComma > lastDot) s = s.replace(/\./g, "").replace(",", ".");
+        else s = s.replace(/,/g, "");
+      } else if (lastComma !== -1) {
+        const dec = s.slice(lastComma + 1);
+        if (/^\d{1,3}$/.test(dec) && (s.length - lastComma - 1) <= 2) {
+          s = s.slice(0, lastComma).replace(/\./g, "") + "." + dec;
+        } else {
+          s = s.replace(/,/g, "");
+        }
+      } else if (lastDot !== -1) {
+        const parts = s.split(".");
+        if (parts.length > 2) s = parts.slice(0, -1).join("") + "." + parts[parts.length - 1];
+      }
+      const n = parseFloat(neg ? "-" + s : s);
+      return Number.isFinite(n) ? n : NaN;
+    };
+
+    const normStr = (s) =>
+      String(s || "")
+        .toLowerCase()
+        .replace(/['’`]/g, "")
+        .replace(/\s+/g, " ")
+        .trim();
+
+    const pickCol = (row, candidates) => {
+      const keys = Object.keys(row || {});
+      const map = {};
+      for (const k of keys) {
+        const nk = k.replace(/^\ufeff/, "").trim().toLowerCase();
+        map[nk] = row[k];
+      }
+      for (const c of candidates) {
+        const v = map[c.toLowerCase()];
+        if (v !== undefined && v !== "") return v;
+      }
+      return "";
+    };
+
+    const txFingerprint = (r) => {
+      const parts = [
+        pickCol(r, ["Trading date", "trading date"]),
+        pickCol(r, ["Order time", "order time"]),
+        pickCol(r, ["Order number", "order number"]),
+        pickCol(r, ["Sale/Purchase", "sale/purchase"]),
+        pickCol(r, ["Security code", "security code"]),
+        pickCol(r, ["Executed quantity of securities", "executed quantity of securities"]),
+        pickCol(r, ["Executed price", "executed price"]),
+        pickCol(r, ["Settlement amount", "settlement amount"]),
+      ];
+      return parts.join("|");
+    };
+
+    const parseTransactions = (rows) => {
+      const list = [];
+      for (const row of rows) {
+        const sideRaw = String(pickCol(row, ["Sale/Purchase", "sale/purchase"]) || "").trim().toLowerCase();
+        const side = sideRaw.startsWith("b") ? "buy" : sideRaw.startsWith("s") ? "sell" : "";
+        if (!side) continue;
+        const code = String(pickCol(row, ["Security code", "security code"]) || "").trim();
+        const name = String(pickCol(row, ["Issuer name", "issuer name"]) || "").trim();
+        const qty = num(
+          pickCol(row, [
+            "Executed quantity of securities",
+            "executed quantity of securities",
+            "Executed quantity",
+            "executed quantity",
+          ])
+        );
+        const settlement = num(
+          pickCol(row, [
+            "Settlement amount",
+            "settlement amount",
+            "Settlement Amount",
+            "Total settlement",
+          ])
+        );
+        const tradeDate = String(pickCol(row, ["Trading date", "trading date"]) || "");
+        const orderTime = String(pickCol(row, ["Order time", "order time"]) || "");
+        const orderNo = String(pickCol(row, ["Order number", "order number"]) || "");
+        if (!code || !name || !qty || qty <= 0 || !settlement) continue;
+        list.push({
+          side,
+          code,
+          name,
+          qty,
+          settlement,
+          tradeDate,
+          orderTime,
+          orderNo,
+          fp: txFingerprint(row),
+          raw: row,
+        });
+      }
+      list.sort((a, b) => {
+        const da = a.tradeDate.localeCompare(b.tradeDate);
+        if (da !== 0) return da;
+        const ta = a.orderTime.localeCompare(b.orderTime);
+        if (ta !== 0) return ta;
+        return String(a.orderNo).localeCompare(String(b.orderNo));
+      });
+      return list;
+    };
+
+    const dedupeTxns = (txns, prevSigsArray) => {
+      const sigs = new Set(Array.isArray(prevSigsArray) ? prevSigsArray : []);
+      const out = [];
+      for (const t of txns) {
+        if (sigs.has(t.fp)) continue;
+        sigs.add(t.fp);
+        out.push(t);
+      }
+      return { merged: out, allSigs: Array.from(sigs) };
+    };
+
+    const fifoPortfolio = (txns) => {
+      const byKey = new Map();
+      const ensure = (code, name) => {
+        const k = `${code}||${name}`;
+        if (!byKey.has(k))
+          byKey.set(k, {
+            key: k,
+            code,
+            name,
+            lots: [],
+            realizedPL: 0,
+            buysQty: 0,
+            sellsQty: 0,
+          });
+        return byKey.get(k);
+      };
+
+      for (const t of txns) {
+        const p = ensure(t.code, t.name);
+        if (t.side === "buy") {
+          const unit = t.settlement / t.qty;
+          p.lots.push({ qty: t.qty, unit });
+          p.buysQty += t.qty;
+        } else {
+          let left = t.qty;
+          const proceedsPerShare = t.settlement / t.qty;
+          p.sellsQty += t.qty;
+          while (left > 1e-9 && p.lots.length) {
+            const lot = p.lots[0];
+            const take = Math.min(lot.qty, left);
+            const cost = take * lot.unit;
+            const proceeds = take * proceedsPerShare;
+            p.realizedPL += proceeds - cost;
+            lot.qty -= take;
+            left -= take;
+            if (lot.qty <= 1e-9) p.lots.shift();
+          }
+        }
+      }
+
+      const holdings = [];
+      let realizedTotal = 0;
+      for (const p of byKey.values()) {
+        realizedTotal += p.realizedPL;
+        let rem = 0;
+        let costRem = 0;
+        for (const lot of p.lots) {
+          rem += lot.qty;
+          costRem += lot.qty * lot.unit;
+        }
+        if (rem <= 1e-6) continue;
+        const avg = costRem / rem;
+        holdings.push({
+          ...p,
+          shares: rem,
+          avgBuy: avg,
+          invested: costRem,
+          realizedPL: p.realizedPL,
+        });
+      }
+      return { holdings, realizedTotal };
+    };
+
+    const extractIsin = (stock) => {
+      if (!stock || typeof stock !== "object") return "";
+      const keys = [
+        "isin",
+        "ISIN",
+        "security_code",
+        "securityCode",
+        "emitent_isin",
+        "issuer_isin",
+        "registration_number",
+        "registration_code",
+        "stock_code",
+      ];
+      for (const k of keys) {
+        if (stock[k]) return String(stock[k]).trim();
+      }
+      for (const v of Object.values(stock)) {
+        if (typeof v === "string" && /^UZ[A-Z0-9]{9,11}$/i.test(v.trim())) return v.trim().toUpperCase();
+      }
+      return "";
+    };
+
+    const buildMarketIndex = (stocks) => {
+      const byIsin = new Map();
+      const byTicker = new Map();
+      const byName = new Map();
+      for (const s of stocks || []) {
+        const isin = extractIsin(s).toUpperCase();
+        const tk = String(s.ticker || "").toUpperCase();
+        const nm = normStr(s.issue_name);
+        if (isin) byIsin.set(isin, s);
+        if (tk) byTicker.set(tk, s);
+        if (nm) byName.set(nm, s);
+      }
+      return { byIsin, byTicker, byName, list: stocks || [] };
+    };
+
+    const matchStock = (holding, index) => {
+      const code = String(holding.code || "").trim().toUpperCase();
+      if (code && index.byIsin.has(code)) return index.byIsin.get(code);
+      if (code && index.byTicker.has(code)) return index.byTicker.get(code);
+      const nm = normStr(holding.name);
+      if (nm && index.byName.has(nm)) return index.byName.get(nm);
+      let best = null;
+      let bestScore = 0;
+      for (const s of index.list) {
+        const inm = normStr(s.issue_name);
+        if (!inm || !nm) continue;
+        if (inm === nm) return s;
+        if (inm.includes(nm) || nm.includes(inm)) {
+          const score = Math.min(inm.length, nm.length);
+          if (score > bestScore) {
+            bestScore = score;
+            best = s;
+          }
+        }
+      }
+      return best;
+    };
+
+    const livePrice = (s) => {
+      if (!s) return NaN;
+      const n = num(
+        s.nominal_price ??
+          s.value ??
+          s.price ??
+          s.last_price ??
+          s.close_price ??
+          s.current_price ??
+          s.market_price
+      );
+      return n;
+    };
+
+    const dailyPct = (s) => {
+      if (!s) return NaN;
+      const v = num(
+        s.growth_prcnt_today ??
+          s.growth_prcnt ??
+          s.growth_percent_today ??
+          s.change_percent
+      );
+      return v;
+    };
+
+    async function fetchJsonViaAllOriginsGet(url) {
+      const u = "https://api.allorigins.win/get?url=" + encodeURIComponent(url);
+      const res = await fetch(u, { credentials: "omit", mode: "cors" });
+      if (!res.ok) throw new Error("allorigins " + res.status);
+      const body = await res.json();
+      const http = body.status && body.status.http_code;
+      if (http && Number(http) !== 200) throw new Error("jett " + http);
+      if (typeof body.contents !== "string") throw new Error("allorigins empty body");
+      return JSON.parse(body.contents);
+    }
+
+    async function fetchJsonViaCodetabs(url) {
+      const u = "https://api.codetabs.com/v1/proxy?quest=" + encodeURIComponent(url);
+      const res = await fetch(u, { credentials: "omit", mode: "cors" });
+      if (!res.ok) throw new Error("codetabs " + res.status);
+      return res.json();
+    }
+
+    async function fetchJsonWithFallback(url) {
+      const headers = {
+        Accept: "application/json",
+        Referer: "https://app.jett.uz/",
+      };
+      const strategies = [
+        async () => {
+          const res = await fetch(url, { method: "GET", headers, credentials: "omit", mode: "cors" });
+          if (!res.ok) throw new Error(String(res.status));
+          return res.json();
+        },
+        async () => fetchJsonViaCodetabs(url),
+        async () => fetchJsonViaAllOriginsGet(url),
+        async () => {
+          const u = "https://corsproxy.io/?" + encodeURIComponent(url);
+          const res = await fetch(u, { credentials: "omit", mode: "cors" });
+          if (!res.ok) throw new Error("corsproxy " + res.status);
+          return res.json();
+        },
+      ];
+      let last = "";
+      for (const run of strategies) {
+        try {
+          return await run();
+        } catch (e) {
+          last = e.message || String(e);
+        }
+      }
+      throw new Error(last);
+    }
+
+    async function fetchAllMarket() {
+      const limit = 10;
+      let offset = 0;
+      const all = [];
+      let total = Infinity;
+      const paramsBase = {
+        limit: String(limit),
+        period: "today",
+        sort_by: "gross_trade_amount",
+        order_by: "desc",
+        query: "",
+      };
+      for (;;) {
+        const qs = new URLSearchParams({ ...paramsBase, offset: String(offset) });
+        const data = await fetchJsonWithFallback(`${JETT_API}?${qs.toString()}`);
+        const chunk = data.stocks || data.items || data.results || [];
+        const stats = data.stats || {};
+        const tr = Number(stats.total_records);
+        if (Number.isFinite(tr) && tr >= 0) total = tr;
+        else if (total === Infinity && chunk.length < limit) total = offset + chunk.length;
+        all.push(...chunk);
+        if (!chunk.length) break;
+        offset += limit;
+        if (Number.isFinite(total) && offset >= total) break;
+        if (!Number.isFinite(total) && chunk.length < limit) break;
+      }
+      return all;
+    }
+
+    function useMarketPoll(intervalMs) {
+      const [stocks, setStocks] = useState([]);
+      const [loading, setLoading] = useState(true);
+      const [error, setError] = useState(null);
+      const [updatedAt, setUpdatedAt] = useState(null);
+
+      const load = useCallback(async (silent = false) => {
+        if (!silent) {
+          setLoading(true);
+          setError(null);
+        }
+        try {
+          const data = await fetchAllMarket();
+          setStocks(data);
+          setUpdatedAt(new Date());
+          if (silent) setError(null);
+        } catch (e) {
+          setError(e.message || String(e));
+        } finally {
+          if (!silent) setLoading(false);
+        }
+      }, []);
+
+      useEffect(() => {
+        load(false);
+        const id = setInterval(() => load(true), intervalMs);
+        return () => clearInterval(id);
+      }, [load, intervalMs]);
+
+      return { stocks, loading, error, updatedAt, reload: () => load(false) };
+    }
+
+    function StatCard({ title, value, sub, positive }) {
+      const tone =
+        positive === true ? "text-emerald-400" : positive === false ? "text-rose-400" : "text-slate-100";
+      return (
+        <div className="glass glass-hover rounded-2xl p-5 fade-in">
+          <div className="text-xs uppercase tracking-wider text-slate-400 font-medium">{title}</div>
+          <div className={`mt-2 text-2xl font-semibold tabular-nums ${tone}`}>{value}</div>
+          {sub ? <div className="mt-1 text-xs text-slate-500">{sub}</div> : null}
+        </div>
+      );
+    }
+
+    function ChartsBlock({ rows, chartColors }) {
+      const pieRef = useRef(null);
+      const barRef = useRef(null);
+      const distRef = useRef(null);
+      const pieChart = useRef(null);
+      const barChart = useRef(null);
+      const distChart = useRef(null);
+
+      useEffect(() => {
+        const destroy = () => {
+          [pieChart, barChart, distChart].forEach((r) => {
+            if (r.current) {
+              r.current.destroy();
+              r.current = null;
+            }
+          });
+        };
+        destroy();
+        if (!rows.length) return;
+        const labels = rows.map((r) => r.code || r.name.slice(0, 8));
+        const values = rows.map((r) => (isFinite(r.currentValue) ? r.currentValue : 0));
+        const pls = rows.map((r) => (isFinite(r.profitLoss) ? r.profitLoss : 0));
+
+        const commonOpts = {
+          plugins: { legend: { labels: { color: "#cbd5e1", boxWidth: 10 } } },
+        };
+
+        if (pieRef.current) {
+          pieChart.current = new Chart(pieRef.current, {
+            type: "pie",
+            data: {
+              labels,
+              datasets: [
+                {
+                  data: values,
+                  backgroundColor: chartColors,
+                  borderWidth: 0,
+                },
+              ],
+            },
+            options: { ...commonOpts, plugins: { ...commonOpts.plugins, tooltip: { callbacks: { label: (c) => `${c.label}: ${fmtUZS(c.parsed)}` } } } },
+          });
+        }
+        if (barRef.current) {
+          barChart.current = new Chart(barRef.current, {
+            type: "bar",
+            data: {
+              labels,
+              datasets: [
+                {
+                  label: "P/L (UZS)",
+                  data: pls,
+                  backgroundColor: pls.map((v) => (v >= 0 ? "rgba(52,211,153,0.75)" : "rgba(251,113,133,0.75)")),
+                  borderRadius: 6,
+                },
+              ],
+            },
+            options: {
+              scales: {
+                x: { ticks: { color: "#94a3b8", maxRotation: 45, minRotation: 0 } },
+                y: { ticks: { color: "#94a3b8" }, grid: { color: "rgba(148,163,184,0.08)" } },
+              },
+              plugins: { legend: { display: false } },
+            },
+          });
+        }
+        if (distRef.current) {
+          const weights = values.map((v) => (values.reduce((a, b) => a + b, 0) ? (v / values.reduce((a, b) => a + b, 0)) * 100 : 0));
+          distChart.current = new Chart(distRef.current, {
+            type: "doughnut",
+            data: {
+              labels: labels.map((l, i) => `${l} (${weights[i].toFixed(1)}%)`),
+              datasets: [
+                {
+                  data: weights,
+                  backgroundColor: chartColors,
+                  borderWidth: 0,
+                },
+              ],
+            },
+            options: { cutout: "62%", plugins: { legend: { position: "right", labels: { color: "#cbd5e1", boxWidth: 10 } } } },
+          });
+        }
+        return destroy;
+      }, [rows, chartColors]);
+
+      if (!rows.length) {
+        return (
+          <div className="glass rounded-2xl p-8 text-center text-slate-500 text-sm">
+            Upload a CSV and load market data to see charts.
+          </div>
+        );
+      }
+
+      return (
+        <div className="grid lg:grid-cols-3 gap-4">
+          <div className="glass rounded-2xl p-4">
+            <div className="text-sm font-medium text-slate-300 mb-2">Allocation</div>
+            <canvas ref={pieRef} height={220} />
+          </div>
+          <div className="glass rounded-2xl p-4">
+            <div className="text-sm font-medium text-slate-300 mb-2">Profit / Loss</div>
+            <canvas ref={barRef} height={220} />
+          </div>
+          <div className="glass rounded-2xl p-4">
+            <div className="text-sm font-medium text-slate-300 mb-2">Portfolio distribution</div>
+            <canvas ref={distRef} height={220} />
+          </div>
+        </div>
+      );
+    }
+
+    const fmtUZS = (n) => {
+      if (!isFinite(n)) return "—";
+      return (
+        new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 }).format(Math.round(n)) + " UZS"
+      );
+    };
+
+    const fmtNum = (n, d = 2) => (isFinite(n) ? Number(n).toFixed(d) : "—");
+
+    function App() {
+      const { stocks, loading: mLoad, error: mErr, updatedAt, reload } = useMarketPoll(60000);
+      const index = useMemo(() => buildMarketIndex(stocks), [stocks]);
+
+      const [txns, setTxns] = useState([]);
+      const [parseMsg, setParseMsg] = useState("");
+      const [dragOver, setDragOver] = useState(false);
+      const [search, setSearch] = useState("");
+      const [filter, setFilter] = useState("all");
+      const [sort, setSort] = useState({ key: "currentValue", dir: "desc" });
+
+      useEffect(() => {
+        try {
+          const t = JSON.parse(localStorage.getItem(LS_TXNS) || "[]");
+          let s = JSON.parse(localStorage.getItem(LS_SIGS) || "[]");
+          if (Array.isArray(t) && t.length) {
+            setTxns(t);
+            if (!Array.isArray(s) || !s.length) {
+              s = [...new Set(t.map((x) => x.fp).filter(Boolean))];
+              localStorage.setItem(LS_SIGS, JSON.stringify(s));
+            }
+          }
+        } catch (_) {}
+      }, []);
+
+      useEffect(() => {
+        try {
+          localStorage.setItem(LS_TXNS, JSON.stringify(txns));
+        } catch (_) {}
+      }, [txns]);
+
+      const { holdings, realizedTotal } = useMemo(() => fifoPortfolio(txns), [txns]);
+
+      const enriched = useMemo(() => {
+        return holdings.map((h) => {
+          const m = matchStock(h, index);
+          const price = livePrice(m);
+          const dPct = dailyPct(m);
+          const cur = isFinite(price) ? price * h.shares : NaN;
+          const pl = isFinite(price) ? (price - h.avgBuy) * h.shares : NaN;
+          const plp = isFinite(price) && h.avgBuy ? ((price - h.avgBuy) / h.avgBuy) * 100 : NaN;
+          return {
+            ...h,
+            market: m,
+            currentPrice: price,
+            currentValue: cur,
+            profitLoss: pl,
+            profitLossPct: plp,
+            dailyPct: dPct,
+          };
+        });
+      }, [holdings, index]);
+
+      const totals = useMemo(() => {
+        let port = 0;
+        let inv = 0;
+        let known = 0;
+        for (const r of enriched) {
+          if (isFinite(r.currentValue)) {
+            port += r.currentValue;
+            known++;
+          }
+          inv += r.invested;
+        }
+        const pl = port - inv;
+        const plp = inv ? (pl / inv) * 100 : NaN;
+        return { port, inv, pl, plp, known };
+      }, [enriched]);
+
+      const sortedFiltered = useMemo(() => {
+        let rows = enriched.slice();
+        const q = normStr(search);
+        if (q) rows = rows.filter((r) => normStr(r.name).includes(q) || normStr(r.code).includes(q));
+        if (filter === "gain") rows = rows.filter((r) => isFinite(r.profitLossPct) && r.profitLossPct > 0);
+        if (filter === "loss") rows = rows.filter((r) => isFinite(r.profitLossPct) && r.profitLossPct < 0);
+        if (filter === "missing") rows = rows.filter((r) => !isFinite(r.currentPrice));
+        const { key, dir } = sort;
+        const mul = dir === "asc" ? 1 : -1;
+        rows.sort((a, b) => {
+          const av = a[key];
+          const bv = b[key];
+          const na = typeof av === "number" ? av : normStr(av);
+          const nb = typeof bv === "number" ? bv : normStr(bv);
+          if (na < nb) return -1 * mul;
+          if (na > nb) return 1 * mul;
+          return 0;
+        });
+        return rows;
+      }, [enriched, search, filter, sort]);
+
+      const best = useMemo(() => {
+        const valid = enriched.filter((r) => isFinite(r.profitLossPct));
+        if (!valid.length) return null;
+        return valid.reduce((a, b) => (a.profitLossPct >= b.profitLossPct ? a : b));
+      }, [enriched]);
+
+      const worst = useMemo(() => {
+        const valid = enriched.filter((r) => isFinite(r.profitLossPct));
+        if (!valid.length) return null;
+        return valid.reduce((a, b) => (a.profitLossPct <= b.profitLossPct ? a : b));
+      }, [enriched]);
+
+      const topGainers = useMemo(() => {
+        return enriched
+          .filter((r) => isFinite(r.profitLossPct))
+          .sort((a, b) => b.profitLossPct - a.profitLossPct)
+          .slice(0, 5);
+      }, [enriched]);
+
+      const topLosers = useMemo(() => {
+        return enriched
+          .filter((r) => isFinite(r.profitLossPct))
+          .sort((a, b) => a.profitLossPct - b.profitLossPct)
+          .slice(0, 5);
+      }, [enriched]);
+
+      const palette = useMemo(() => {
+        const base = ["#2dd4bf", "#38bdf8", "#a78bfa", "#f472b6", "#fbbf24", "#34d399", "#60a5fa", "#c084fc"];
+        return sortedFiltered.map((_, i) => base[i % base.length]);
+      }, [sortedFiltered]);
+
+      const onFile = (file) => {
+        if (!file) return;
+        setParseMsg("");
+        Papa.parse(file, {
+          header: true,
+          skipEmptyLines: true,
+          complete: (res) => {
+            const rows = res.data || [];
+            const parsed = parseTransactions(rows);
+            let prevSigs = [];
+            try {
+              prevSigs = JSON.parse(localStorage.getItem(LS_SIGS) || "[]");
+            } catch (_) {}
+            const { merged, allSigs } = dedupeTxns(parsed, prevSigs);
+            try {
+              localStorage.setItem(LS_SIGS, JSON.stringify(allSigs));
+            } catch (_) {}
+            setTxns((prev) => {
+              const next = prev.concat(merged);
+              queueMicrotask(() =>
+                setParseMsg(
+                  `Imported ${merged.length} new rows (${parsed.length} in file). Total ledger rows: ${next.length}.`
+                )
+              );
+              return next;
+            });
+          },
+          error: (err) => setParseMsg(err.message || String(err)),
+        });
+      };
+
+      const clearData = () => {
+        setTxns([]);
+        setParseMsg("Cleared.");
+        try {
+          localStorage.removeItem(LS_TXNS);
+          localStorage.removeItem(LS_SIGS);
+        } catch (_) {}
+      };
+
+      const toggleSort = (key) => {
+        setSort((s) =>
+          s.key === key ? { key, dir: s.dir === "asc" ? "desc" : "asc" } : { key, dir: "desc" }
+        );
+      };
+
+      const Th = ({ k, children }) => (
+        <th
+          className="px-3 py-3 text-left text-xs font-semibold text-slate-400 cursor-pointer hover:text-teal-300 whitespace-nowrap"
+          onClick={() => toggleSort(k)}
+        >
+          {children}
+          {sort.key === k ? <span className="ml-1 text-teal-400">{sort.dir === "asc" ? "▲" : "▼"}</span> : null}
+        </th>
+      );
+
+      return (
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-10 space-y-8">
+          <header className="flex flex-col md:flex-row md:items-end md:justify-between gap-4 fade-in">
+            <div>
+              <h1 className="text-3xl md:text-4xl font-bold tracking-tight bg-gradient-to-r from-teal-300 via-sky-300 to-indigo-300 bg-clip-text text-transparent">
+                Portfolio Monitor
+              </h1>
+              <p className="text-slate-400 mt-2 max-w-xl text-sm leading-relaxed">
+                Uzbek broker CSV → FIFO positions, live prices from{" "}
+                <span className="text-slate-200">api.jett.uz/stockv3</span>. Jett usually allows that API only from{" "}
+                <span className="text-slate-200">app.jett.uz</span>, so from localhost you may see 403 — the app falls back to public JSON relays. Refreshes every 60s.
+              </p>
+            </div>
+            <div className="flex items-center gap-3">
+              <button
+                type="button"
+                onClick={reload}
+                className="px-4 py-2 rounded-xl glass glass-hover text-sm font-medium text-teal-200 border border-teal-500/20"
+              >
+                Refresh market
+              </button>
+              <button
+                type="button"
+                onClick={clearData}
+                className="px-4 py-2 rounded-xl border border-rose-500/30 text-rose-300 text-sm hover:bg-rose-500/10 transition"
+              >
+                Reset saved
+              </button>
+            </div>
+          </header>
+
+          <div
+            className={`glass rounded-2xl p-6 border-dashed border-2 transition ${dragOver ? "drop-active" : "border-slate-600"}`}
+            onDragOver={(e) => {
+              e.preventDefault();
+              setDragOver(true);
+            }}
+            onDragLeave={() => setDragOver(false)}
+            onDrop={(e) => {
+              e.preventDefault();
+              setDragOver(false);
+              const f = e.dataTransfer.files?.[0];
+              if (f) onFile(f);
+            }}
+          >
+            <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+              <div>
+                <div className="text-lg font-semibold text-slate-100">Upload trading CSV</div>
+                <div className="text-sm text-slate-500 mt-1">Drag & drop or choose a file. Duplicates are skipped by fingerprint.</div>
+                {parseMsg ? <div className="text-xs text-teal-300 mt-2">{parseMsg}</div> : null}
+              </div>
+              <label className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-teal-500/15 border border-teal-400/30 text-teal-200 text-sm font-medium cursor-pointer hover:bg-teal-500/25 transition">
+                <input type="file" accept=".csv,text/csv" className="hidden" onChange={(e) => onFile(e.target.files?.[0])} />
+                Select CSV
+              </label>
+            </div>
+          </div>
+
+          <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
+            <StatCard title="Total portfolio value" value={fmtUZS(totals.port)} sub={totals.known < enriched.length ? `${enriched.length - totals.known} rows missing price` : "All rows priced"} />
+            <StatCard title="Total invested (FIFO cost)" value={fmtUZS(totals.inv)} />
+            <StatCard
+              title="Unrealized P/L"
+              value={fmtUZS(totals.pl)}
+              sub={isFinite(totals.plp) ? `${fmtNum(totals.plp, 2)}% vs cost` : ""}
+              positive={totals.pl > 0 ? true : totals.pl < 0 ? false : undefined}
+            />
+            <StatCard
+              title="P/L %"
+              value={isFinite(totals.plp) ? `${fmtNum(totals.plp, 2)}%` : "—"}
+              positive={totals.plp > 0 ? true : totals.plp < 0 ? false : undefined}
+            />
+            <StatCard
+              title="Realized P/L (FIFO)"
+              value={fmtUZS(realizedTotal)}
+              sub="Closed / sold lots"
+              positive={realizedTotal > 0 ? true : realizedTotal < 0 ? false : undefined}
+            />
+            <StatCard title="Holdings" value={String(enriched.length)} sub={`${txns.length} ledger rows`} />
+            <StatCard
+              title="Best performer"
+              value={best ? `${best.code}` : "—"}
+              sub={best ? `${fmtNum(best.profitLossPct, 2)}%` : "Need prices"}
+              positive={best && best.profitLossPct >= 0}
+            />
+            <StatCard
+              title="Worst performer"
+              value={worst ? `${worst.code}` : "—"}
+              sub={worst ? `${fmtNum(worst.profitLossPct, 2)}%` : "Need prices"}
+              positive={worst && worst.profitLossPct >= 0 ? true : false}
+            />
+            <StatCard
+              title="Market data"
+              value={mLoad ? "Loading…" : mErr ? "Error" : "OK"}
+              sub={updatedAt ? `Updated ${updatedAt.toLocaleTimeString()}` : ""}
+              positive={!mErr}
+            />
+          </div>
+
+          {mErr ? (
+            <div className="glass border border-rose-500/30 rounded-xl p-4 text-rose-300 text-sm space-y-2">
+              <div>
+                <span className="font-semibold text-rose-200">Market fetch failed:</span> {mErr}
+              </div>
+              <ul className="list-disc pl-5 text-slate-400 text-xs space-y-1">
+                <li>
+                  Using <strong className="text-slate-300">https://127.0.0.1</strong> instead of http does{" "}
+                  <strong className="text-slate-300">not</strong> fix Jett’s 403: your origin is still not{" "}
+                  <code className="text-slate-300">https://app.jett.uz</code>.
+                </li>
+                <li>
+                  <code className="text-slate-300">ERR_BLOCKED_BY_CLIENT</code> on allorigins is almost always an{" "}
+                  <strong className="text-slate-300">ad blocker / privacy filter</strong> — allow this page or{" "}
+                  <code className="text-slate-300">api.allorigins.win</code>, or try another browser profile.
+                </li>
+                <li>If every relay returns 403, Jett may be blocking data-center IPs; try another network or VPN.</li>
+              </ul>
+            </div>
+          ) : null}
+
+          <div className="grid md:grid-cols-2 gap-4">
+            <div className="glass rounded-2xl p-5">
+              <div className="text-sm font-semibold text-slate-200 mb-3">Top gainers</div>
+              <ul className="space-y-2 text-sm">
+                {topGainers.length ? (
+                  topGainers.map((r) => (
+                    <li key={r.key} className="flex justify-between gap-2">
+                      <span className="text-slate-300 truncate">{r.name}</span>
+                      <span className="text-emerald-400 font-medium tabular-nums">+{fmtNum(r.profitLossPct, 2)}%</span>
+                    </li>
+                  ))
+                ) : (
+                  <li className="text-slate-500">No data</li>
+                )}
+              </ul>
+            </div>
+            <div className="glass rounded-2xl p-5">
+              <div className="text-sm font-semibold text-slate-200 mb-3">Top losers</div>
+              <ul className="space-y-2 text-sm">
+                {topLosers.length ? (
+                  topLosers.map((r) => (
+                    <li key={r.key} className="flex justify-between gap-2">
+                      <span className="text-slate-300 truncate">{r.name}</span>
+                      <span className="text-rose-400 font-medium tabular-nums">{fmtNum(r.profitLossPct, 2)}%</span>
+                    </li>
+                  ))
+                ) : (
+                  <li className="text-slate-500">No data</li>
+                )}
+              </ul>
+            </div>
+          </div>
+
+          <ChartsBlock rows={sortedFiltered} chartColors={palette} />
+
+          <div className="glass rounded-2xl p-4 space-y-4">
+            <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3">
+              <div className="text-lg font-semibold">Holdings</div>
+              <div className="flex flex-wrap gap-2 items-center">
+                <input
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  placeholder="Search company or code"
+                  className="bg-slate-900/60 border border-slate-700 rounded-lg px-3 py-2 text-sm w-full sm:w-64 focus:outline-none focus:ring-2 focus:ring-teal-500/40"
+                />
+                <select
+                  value={filter}
+                  onChange={(e) => setFilter(e.target.value)}
+                  className="bg-slate-900/60 border border-slate-700 rounded-lg px-3 py-2 text-sm"
+                >
+                  <option value="all">All</option>
+                  <option value="gain">In profit</option>
+                  <option value="loss">In loss</option>
+                  <option value="missing">Missing price</option>
+                </select>
+                {mLoad ? <div className="spinner" title="Loading market" /> : null}
+              </div>
+            </div>
+            <div className="overflow-x-auto rounded-xl border border-white/5">
+              <table className="min-w-full text-sm sticky-th">
+                <thead>
+                  <tr className="border-b border-white/5">
+                    <Th k="name">Company</Th>
+                    <Th k="code">Security</Th>
+                    <Th k="shares">Shares</Th>
+                    <Th k="avgBuy">Avg buy</Th>
+                    <Th k="currentPrice">Last</Th>
+                    <Th k="invested">Invested</Th>
+                    <Th k="currentValue">Value</Th>
+                    <Th k="profitLoss">P/L</Th>
+                    <Th k="profitLossPct">P/L %</Th>
+                    <Th k="dailyPct">Day %</Th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {sortedFiltered.length === 0 ? (
+                    <tr>
+                      <td colSpan={10} className="px-4 py-10 text-center text-slate-500">
+                        {txns.length ? "No open positions (or filters hide rows)." : "Upload your broker CSV to begin."}
+                      </td>
+                    </tr>
+                  ) : (
+                    sortedFiltered.map((r) => (
+                      <tr key={r.key} className="border-b border-white/5 hover:bg-white/[0.03] transition-colors">
+                        <td className="px-3 py-2 text-slate-200 max-w-[220px] truncate">{r.name}</td>
+                        <td className="px-3 py-2 text-slate-400 font-mono text-xs">{r.code}</td>
+                        <td className="px-3 py-2 tabular-nums">{fmtNum(r.shares, 0)}</td>
+                        <td className="px-3 py-2 tabular-nums">{fmtUZS(r.avgBuy)}</td>
+                        <td className="px-3 py-2 tabular-nums">{isFinite(r.currentPrice) ? fmtUZS(r.currentPrice) : "—"}</td>
+                        <td className="px-3 py-2 tabular-nums">{fmtUZS(r.invested)}</td>
+                        <td className="px-3 py-2 tabular-nums">{isFinite(r.currentValue) ? fmtUZS(r.currentValue) : "—"}</td>
+                        <td className={`px-3 py-2 tabular-nums ${r.profitLoss > 0 ? "text-emerald-400" : r.profitLoss < 0 ? "text-rose-400" : ""}`}>
+                          {isFinite(r.profitLoss) ? fmtUZS(r.profitLoss) : "—"}
+                        </td>
+                        <td className={`px-3 py-2 tabular-nums ${r.profitLossPct > 0 ? "text-emerald-400" : r.profitLossPct < 0 ? "text-rose-400" : ""}`}>
+                          {isFinite(r.profitLossPct) ? `${fmtNum(r.profitLossPct, 2)}%` : "—"}
+                        </td>
+                        <td className={`px-3 py-2 tabular-nums ${r.dailyPct > 0 ? "text-emerald-400" : r.dailyPct < 0 ? "text-rose-400" : ""}`}>
+                          {isFinite(r.dailyPct) ? `${fmtNum(r.dailyPct, 2)}%` : "—"}
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <footer className="text-center text-xs text-slate-600 pb-10">
+            For educational use. Market data © Jett / respective owners. FIFO realized P/L is tracked internally; dashboard focuses on open positions.
+          </footer>
+        </div>
+      );
+    }
+
+    const root = ReactDOM.createRoot(document.getElementById("root"));
+    root.render(<App />);
+  </script>
+</body>
+</html>
